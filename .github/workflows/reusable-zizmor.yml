@@ -72,38 +72,55 @@ on:
 permissions: {}
 
 jobs:
-  # The default config file is in `.github/zizmor.yml`. When we're called by a
-  # remote repository, this file won't be available - in reusable workflows the
-  # workflow's repo isn't checked out. In order to make something like:
-  #
-  # ```yaml
-  # uses: grafana/shared-workflows/.github/workflows/reusable-zizmor.yml@<SHA>`
-  # ```
-  #
-  # work, we need to figure out the reference we were called at, and then fetch
-  # the file from there. This `job-workflow-ref` job does the first part of
-  # that. The way to do that is a little bit indirect. You can ask GitHub's OIDC
-  # endpoint for a token, and fetch the info out of the `job_workflow_ref`claim.
-  # This runs in a separate job because the main job doesn't need `id-token:
-  # write` permissons, and this one doesn't need anything but that. We can keep
-  # the permissions as minimal as possible this way.
-  job-workflow-ref:
-    permissions:
-      id-token: write
+  analysis:
+    name: Generate and upload zizmor results 🌈
 
     runs-on: ${{ inputs.runs-on }}
 
     outputs:
-      owner: ${{ steps.get-job-workflow-ref.outputs.owner }}
-      repo: ${{ steps.get-job-workflow-ref.outputs.repo }}
-      sha: ${{ steps.get-job-workflow-ref.outputs.sha }}
+      has-dangerous-triggers: ${{ steps.check-dangerous-triggers.outputs.found }}
+
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+      # fallback: comment on PR when code-scanning upload is unavailable
+      # (private repos without Advanced Security)
+      pull-requests: write
+      # upload the results to code-scanning dashboard.
+      security-events: write
+
+    env:
+      MIN_SEVERITY: ${{ inputs.min-severity }}
+      MIN_CONFIDENCE: ${{ inputs.min-confidence }}
+      # renovate: datasource=pypi depName=zizmor
+      ZIZMOR_VERSION: 1.30.1
+      GH_TOKEN: ${{ inputs.github-token || github.token }}
+      ZIZMOR_EXTRA_ARGS: ${{ inputs.extra-args }}
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
+        if: ${{ ! github.event.repository.private }}
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
+      # The default config file is in `.github/zizmor.yml`. When we're called by
+      # a remote repository, this file won't be available - in reusable
+      # workflows the workflow's repo isn't checked out. In order to make
+      # something like:
+      #
+      # ```yaml
+      # uses: grafana/shared-workflows/.github/workflows/reusable-zizmor.yml@<SHA>`
+      # ```
+      #
+      # work, we need to figure out the reference we were called at, and then
+      # fetch the file from there. The next steps do the first part of that. The
+      # way to do that is a little bit indirect. You can ask GitHub's OIDC
+      # endpoint for a token, and fetch the info out of the `job_workflow_ref`
+      # claim. They run before checkout, so the token is requested before any
+      # repository content is on the runner.
       - id: setup-node
         name: Setup node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -258,42 +275,6 @@ jobs:
               }
             }
 
-  analysis:
-    needs: job-workflow-ref
-
-    name: Generate and upload zizmor results 🌈
-
-    runs-on: ${{ inputs.runs-on }}
-
-    outputs:
-      has-dangerous-triggers: ${{ steps.check-dangerous-triggers.outputs.found }}
-
-    permissions:
-      actions: read
-      contents: read
-
-      # fallback: comment on PR when code-scanning upload is unavailable
-      # (private repos without Advanced Security)
-      pull-requests: write
-      # upload the results to code-scanning dashboard.
-      security-events: write
-
-    env:
-      MIN_SEVERITY: ${{ inputs.min-severity }}
-      MIN_CONFIDENCE: ${{ inputs.min-confidence }}
-      # renovate: datasource=pypi depName=zizmor
-      ZIZMOR_VERSION: 1.30.1
-      GH_TOKEN: ${{ inputs.github-token || github.token }}
-      ZIZMOR_EXTRA_ARGS: ${{ inputs.extra-args }}
-      DEFAULT_ZIZMOR_CONFIG_DOWNLOADED: ${{ needs.job-workflow-ref.outputs.sha }}
-
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        if: ${{ ! github.event.repository.private }}
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
-        with:
-          egress-policy: audit
-
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -307,19 +288,19 @@ jobs:
       - name: Restore config from cache
         id: cache-config
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: env.DEFAULT_ZIZMOR_CONFIG_DOWNLOADED
+        if: steps.get-job-workflow-ref.outputs.sha
         with:
           path: ${{ runner.temp }}/zizmor.yml
-          key: zizmor-config-${{ needs.job-workflow-ref.outputs.repo }}-${{ needs.job-workflow-ref.outputs.sha }}
+          key: zizmor-config-${{ steps.get-job-workflow-ref.outputs.repo }}-${{ steps.get-job-workflow-ref.outputs.sha }}
 
       - name: Fetch Zizmor Config
         id: fetch-config
-        if: steps.cache-config.outputs.cache-hit != 'true' && env.DEFAULT_ZIZMOR_CONFIG_DOWNLOADED
+        if: steps.cache-config.outputs.cache-hit != 'true' && steps.get-job-workflow-ref.outputs.sha
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          OWNER: ${{ needs.job-workflow-ref.outputs.owner }}
-          REPO: ${{ needs.job-workflow-ref.outputs.repo }}
-          SHA: ${{ needs.job-workflow-ref.outputs.sha }}
+          OWNER: ${{ steps.get-job-workflow-ref.outputs.owner }}
+          REPO: ${{ steps.get-job-workflow-ref.outputs.repo }}
+          SHA: ${{ steps.get-job-workflow-ref.outputs.sha }}
         with:
           script: |
             const fs = require('fs').promises;
@@ -330,7 +311,7 @@ jobs:
             const sha = process.env.SHA;
 
             if (!owner || !repo || !sha) {
-              core.warning('Missing owner, repo or sha. Did the job-workflow-ref step run OK?');
+              core.warning('Missing owner, repo or sha. Did the get-job-workflow-ref step run OK?');
 
               return;
             }
@@ -379,6 +360,7 @@ jobs:
         id: setup-config
         env:
           FORCE_DEFAULT_CONFIG: ${{ inputs.always-use-default-config && 'true' || '' }}
+          DEFAULT_ZIZMOR_CONFIG_DOWNLOADED: ${{ steps.get-job-workflow-ref.outputs.sha }}
         shell: sh
         run: |
           if [ -z "${FORCE_DEFAULT_CONFIG}" ]; then
@@ -592,7 +574,7 @@ jobs:
   grafana-bench:
     name: Send zizmor metrics to Prometheus via Grafana Bench
     continue-on-error: true
-    needs: [analysis, job-workflow-ref]
+    needs: analysis
     # Only run for grafana org and non-fork PRs (fork PRs have no OIDC/Vault access).
     if: ${{ github.repository_owner == 'grafana' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) && inputs.send-bench-metrics && always() && !cancelled() && (needs.analysis.result == 'success' || needs.analysis.result == 'failure') }}
     runs-on: ${{ inputs.runs-on }}

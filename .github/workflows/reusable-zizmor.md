@@ -38,7 +38,7 @@ jobs:
       actions: read
       contents: read
 
-      # used in the `job-workflow-ref` job to fetch an OIDC token, which
+      # used by the analysis job to fetch an OIDC token, which
       # allows the run to determine its ref. That's used to find the default
       # configuration file. This doesn't work from forks. In that case,
       # Zizmor's default config behaviour will be used.
@@ -80,7 +80,7 @@ jobs:
       actions: read
       contents: read
 
-      # used in the `job-workflow-ref` job to fetch an OIDC token, which
+      # used by the analysis job to fetch an OIDC token, which
       # allows the run to determine its ref. That's used to find the default
       # configuration file. This doesn't work from forks. In that case,
       # Zizmor's default config behaviour will be used.
